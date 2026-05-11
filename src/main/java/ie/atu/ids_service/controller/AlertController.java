@@ -37,8 +37,8 @@ public class AlertController {
         return alertRepository.findByUsername(username);
     }
 
-    // POST /api/alerts/analyze — triggers the IDS scan and returns new alerts
-    @PostMapping("/analyze")
+    // GET /api/alerts/analyze — triggers the IDS scan and returns new alerts
+    @GetMapping("/analyze")
     public List<Alert> analyzeAttempts() {
         return detectionService.analyzeAttempts();
     }
