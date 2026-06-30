@@ -11,6 +11,7 @@ import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 @Service
@@ -29,15 +30,19 @@ private Alert createAlert(String type, String description, String username, Stri
     alert.setTimestamp(LocalDateTime.now());
     return alertRepository.save(alert);
 }
+// Word-boundary regex avoids false positives on legitimate domains like
+// alsatorix.com (contains "or") or doctor@example.com (ends in "or").
+// Single-quote and -- are unambiguous SQL tokens so no \b needed there.
+private static final Pattern SQL_INJECTION_PATTERN = Pattern.compile(
+        "'|--|1=1|\\bOR\\b|\\bDROP\\b|\\bSELECT\\b|\\bUNION\\b",
+        Pattern.CASE_INSENSITIVE
+);
+
 private List<Alert> detectSqlInjection(List<LogInAttemptDTO> attempts) {
-    List<String> patterns = List.of("'", "OR", "--", "1=1", "DROP", "SELECT", "UNION");
     List<Alert> alerts = new ArrayList<>();
 
     for (LogInAttemptDTO attempt : attempts) {
-        String upper = attempt.getUsername().toUpperCase();
-        boolean suspicious = patterns.stream().anyMatch(upper::contains);
-
-        if (suspicious) {
+        if (SQL_INJECTION_PATTERN.matcher(attempt.getUsername()).find()) {
             Alert alert = createAlert(
                     "SQL_INJECTION",
                     "SQL injection attempt detected: " + attempt.getUsername(),
