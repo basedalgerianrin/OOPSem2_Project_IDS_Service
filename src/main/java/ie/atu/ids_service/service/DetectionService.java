@@ -26,6 +26,17 @@ public class DetectionService {
 
 private static String nz(String s) { return s == null ? "" : s; }   // null-safe IP
 
+// Chronological order; same-second ties broken by id (= insertion order).
+private static void sortChronologically(List<LogInAttemptDTO> list) {
+    list.sort((x, y) -> {
+        LocalDateTime tx = x.getTimestamp(), ty = y.getTimestamp();
+        if (tx != null && ty != null && !tx.isEqual(ty)) return tx.compareTo(ty);
+        long ix = x.getId() == null ? 0L : x.getId();
+        long iy = y.getId() == null ? 0L : y.getId();
+        return Long.compare(ix, iy);
+    });
+}
+
 // Upsert (NOT blind insert): one stored alert per (alertType, username).
 // A repeat scan over the same login history re-finds the existing row and
 // updates it in place instead of piling up duplicates — so the dashboard's
@@ -88,15 +99,21 @@ private List<Alert> detectSqlInjection(List<LogInAttemptDTO> attempts) {
     return alerts;
 }
 
-// ----- BRUTE FORCE (IP-aware) ------------------------------------------------
-// Severity now weighs WHERE the attempts came from, not just how many:
-//   CRITICAL - a login SUCCEEDED from an IP not seen in the failures (takeover),
-//              or 20+ failures from one IP that then succeeded (password cracked).
-//   HIGH     - failures from >=3 distinct IPs (distributed / credential stuffing),
-//              or 20+ failures from a single IP with no success.
+// ----- BRUTE FORCE (IP- and chronology-aware) --------------------------------
+// Severity weighs WHERE the attempts came from and WHEN the success happened,
+// not just how many:
+//   CRITICAL - once the failure streak already existed (>=5 fails), a login
+//              SUCCEEDED from an IP that produced none of those failures
+//              (takeover), or 20+ failures that then succeeded (cracked).
+//   HIGH     - failures from >=3 distinct known IPs (distributed / credential
+//              stuffing), or 20+ failures with no subsequent success.
 //   MEDIUM   - 10-19 failures from a single IP.
 //   LOW      - 5-9 failures; if a success followed FROM THE SAME IP, that's the
 //              "client forgot their password" shape, not an attack.
+// A success BEFORE the failures started is the user's normal login and must
+// not count as a takeover. Attempts with no recorded IP (rows that predate IP
+// capture) carry no location signal: they are never counted as a distinct IP
+// and can neither trigger nor suppress the new-IP takeover rule.
 private List<Alert> detectBruteForce(List<LogInAttemptDTO> attempts) {
     List<Alert> alerts = new ArrayList<>();
     Map<String, List<LogInAttemptDTO>> byUser = attempts.stream()
@@ -104,44 +121,50 @@ private List<Alert> detectBruteForce(List<LogInAttemptDTO> attempts) {
 
     for (Map.Entry<String, List<LogInAttemptDTO>> entry : byUser.entrySet()) {
         String user = entry.getKey();
-        List<LogInAttemptDTO> userAttempts = entry.getValue();
+        List<LogInAttemptDTO> ordered = new ArrayList<>(entry.getValue());
+        sortChronologically(ordered);
 
-        List<LogInAttemptDTO> failures = userAttempts.stream()
-                .filter(a -> !a.isSuccess()).collect(Collectors.toList());
-        int fails = failures.size();
+        int fails = 0;
+        Set<String> failIps = new HashSet<>();   // known IPs that produced failures
+        boolean succeededAfterFails = false;     // a success once the streak (>=5) existed
+        boolean successFromNewIp = false;        // ...from an IP with none of those failures
+
+        for (LogInAttemptDTO a : ordered) {
+            String ip = nz(a.getIp());
+            if (!a.isSuccess()) {
+                fails++;
+                if (!ip.isEmpty()) failIps.add(ip);
+            } else if (fails >= 5) {
+                succeededAfterFails = true;
+                if (!ip.isEmpty() && !failIps.isEmpty() && !failIps.contains(ip)) {
+                    successFromNewIp = true;
+                }
+            }
+        }
         if (fails < 5) {
             continue;   // below the brute-force threshold
         }
-
-        Set<String> failIps = failures.stream().map(a -> nz(a.getIp()))
-                .collect(Collectors.toSet());
-        Set<String> successIps = userAttempts.stream().filter(LogInAttemptDTO::isSuccess)
-                .map(a -> nz(a.getIp())).collect(Collectors.toSet());
-        boolean succeeded = !successIps.isEmpty();
-        // Did a success come from somewhere the guessing did NOT? That's the
-        // tell-tale of a takeover (brute from one host, log in from another).
-        boolean successFromNewIp = successIps.stream().anyMatch(ip -> !failIps.contains(ip));
         int nIps = failIps.size();
 
         String severity;
         String reason;
-        if (succeeded && successFromNewIp) {
+        if (successFromNewIp) {
             severity = "CRITICAL";
-            reason = "a login succeeded from an IP not seen among the failures — likely account takeover";
+            reason = "after " + fails + " failures a login succeeded from an IP that produced none of them — likely account takeover";
         } else if (nIps >= 3) {
             severity = "HIGH";
             reason = fails + " failures from " + nIps + " distinct IPs — distributed / credential-stuffing pattern";
         } else if (fails >= 20) {
-            severity = succeeded ? "CRITICAL" : "HIGH";
-            reason = succeeded
+            severity = succeededAfterFails ? "CRITICAL" : "HIGH";
+            reason = succeededAfterFails
                     ? fails + " failures then a success from the same IP — password likely cracked"
                     : fails + " failed attempts from a single IP";
         } else if (fails >= 10) {
             severity = "MEDIUM";
-            reason = fails + " failed attempts" + (succeeded ? " then a success" : "") + " from a single IP";
+            reason = fails + " failed attempts" + (succeededAfterFails ? " then a success" : "") + " from a single IP";
         } else {   // 5-9 failures
             severity = "LOW";
-            reason = succeeded
+            reason = succeededAfterFails
                     ? fails + " failures then a successful login from the same IP — likely a legitimate user who forgot their password"
                     : fails + " failed attempts from a single IP";
         }
@@ -168,14 +191,7 @@ private List<Alert> detectNewLocation(List<LogInAttemptDTO> attempts) {
     for (Map.Entry<String, List<LogInAttemptDTO>> entry : byUser.entrySet()) {
         String user = entry.getKey();
         List<LogInAttemptDTO> ordered = new ArrayList<>(entry.getValue());
-        // Chronological; same-second ties broken by id (= insertion order).
-        ordered.sort((x, y) -> {
-            LocalDateTime tx = x.getTimestamp(), ty = y.getTimestamp();
-            if (tx != null && ty != null && !tx.isEqual(ty)) return tx.compareTo(ty);
-            long ix = x.getId() == null ? 0L : x.getId();
-            long iy = y.getId() == null ? 0L : y.getId();
-            return Long.compare(ix, iy);
-        });
+        sortChronologically(ordered);
 
         Set<String> seenIps = new HashSet<>();
         for (LogInAttemptDTO a : ordered) {
@@ -189,7 +205,11 @@ private List<Alert> detectNewLocation(List<LogInAttemptDTO> attempts) {
                         "LOW"));
                 break;   // one new-location flag per user is enough
             }
-            seenIps.add(ip);
+            // Rows without a recorded IP carry no location signal — adding ""
+            // would create a phantom baseline and false-flag the first real IP.
+            if (!ip.isEmpty()) {
+                seenIps.add(ip);
+            }
         }
     }
     return alerts;
