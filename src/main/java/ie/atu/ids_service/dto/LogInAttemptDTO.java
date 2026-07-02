@@ -10,6 +10,7 @@ public class LogInAttemptDTO {
     private String username;
     private String passwordInput;
     private boolean success;
+    private String ip;            // source IP of the attempt (added for IP-aware detection)
     private LocalDateTime timestamp;
 
 }
