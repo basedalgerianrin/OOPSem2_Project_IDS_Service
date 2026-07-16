@@ -92,6 +92,28 @@
                 <type>pom</type>
                 <scope>import</scope>
             </dependency>
+            <!-- Trivy-flagged CVEs in versions the spring-boot-starter-parent 4.0.6
+                 BOM still manages; pinned ahead of the BOM until it catches up. -->
+            <dependency>
+                <groupId>org.apache.tomcat.embed</groupId>
+                <artifactId>tomcat-embed-core</artifactId>
+                <version>11.0.22</version>
+            </dependency>
+            <dependency>
+                <groupId>com.fasterxml.jackson.core</groupId>
+                <artifactId>jackson-databind</artifactId>
+                <version>2.21.4</version>
+            </dependency>
+            <dependency>
+                <groupId>org.bouncycastle</groupId>
+                <artifactId>bcprov-jdk18on</artifactId>
+                <version>1.81.1</version>
+            </dependency>
+            <dependency>
+                <groupId>commons-fileupload</groupId>
+                <artifactId>commons-fileupload</artifactId>
+                <version>1.6.0</version>
+            </dependency>
         </dependencies>
     </dependencyManagement>
 
