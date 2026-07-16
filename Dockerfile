@@ -12,9 +12,14 @@ RUN sed -i 's/\r$//' mvnw && chmod +x mvnw && ./mvnw -q -B -DskipTests clean pac
 FROM eclipse-temurin:25-jre
 WORKDIR /app
 # H2 file DB lives here; mount a named volume at /data so alerts persist.
-RUN mkdir -p /data
+# Runs as a dedicated non-root user (uid 10001) — matches the FastAPI app's
+# appuser convention; a JVM-level RCE no longer hands the attacker root.
+RUN groupadd -r ids && useradd -r -g ids -u 10001 ids \
+    && mkdir -p /data && chown -R ids:ids /app /data
 ENV IDS_DB_PATH=/data/idsdb
 COPY --from=build /build/target/IDS_service-*.jar /app/app.jar
+RUN chown ids:ids /app/app.jar
+USER ids
 EXPOSE 8082
 VOLUME ["/data"]
 ENTRYPOINT ["java", "-jar", "/app/app.jar"]
