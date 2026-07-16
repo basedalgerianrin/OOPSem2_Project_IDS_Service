@@ -104,6 +104,13 @@
                 <artifactId>jackson-databind</artifactId>
                 <version>2.21.4</version>
             </dependency>
+            <!-- Jackson 3's new groupId (tools.jackson.core) — pulled in
+                 separately from the 2.x line above; both are on the classpath. -->
+            <dependency>
+                <groupId>tools.jackson.core</groupId>
+                <artifactId>jackson-databind</artifactId>
+                <version>3.1.4</version>
+            </dependency>
             <dependency>
                 <groupId>org.bouncycastle</groupId>
                 <artifactId>bcprov-jdk18on</artifactId>
